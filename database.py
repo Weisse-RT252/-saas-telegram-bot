@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 import pandas as pd
 import os
 import json
-from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart, ModelMessage
 from typing import Optional
 
 class Database:
@@ -40,52 +40,32 @@ class Database:
 
     async def get_history(self, user_id: int) -> list[Message]:
         async with self.pool.acquire() as conn:
-            history = await conn.fetchval(
-                "SELECT history FROM chat_history WHERE user_id = $1", 
+            messages = await conn.fetch(
+                """SELECT id, role, content, created_at 
+                FROM messages 
+                WHERE user_id = $1 
+                ORDER BY created_at ASC""",
                 user_id
             )
             print(f"\n=== Получение истории ===")
-            print(f"Raw history: {history}")
-            print(f"Type: {type(history)}")
-            
-            if history:
-                if isinstance(history, str):
-                    history = json.loads(history)
-                return [Message.model_validate(item) for item in history]
-            return []
+            print(f"Получено {len(messages)} сообщений")
+            return [Message(
+                role=msg['role'],
+                content=msg['content'],
+                timestamp=msg['created_at']
+            ) for msg in messages]
 
     async def save_message(self, user_id: int, agent_type: str, message: str):
         msg_obj = Message(role=agent_type, content=message)
-        msg_dict = msg_obj.model_dump(mode='json')
         
         print(f"\n=== Сохранение сообщения ===")
         print(f"Message object: {msg_obj}")
-        print(f"Message dict: {msg_dict}")
         
         async with self.pool.acquire() as conn:
-            # Сначала получаем текущую историю
-            current_history = await conn.fetchval(
-                "SELECT history FROM chat_history WHERE user_id = $1",
-                user_id
-            ) or []
-            
-            print(f"Current history: {current_history}")
-            print(f"Type of current history: {type(current_history)}")
-            
-            # Добавляем новое сообщение
-            if isinstance(current_history, str):
-                current_history = json.loads(current_history)
-            
-            new_history = current_history + [msg_dict]
-            print(f"New history: {new_history}")
-            
             await conn.execute(
-                """INSERT INTO chat_history (user_id, history)
-                VALUES ($1, $2::jsonb)
-                ON CONFLICT (user_id) DO UPDATE
-                SET history = $2::jsonb
-                """,
-                user_id, json.dumps(new_history)
+                """INSERT INTO messages (user_id, role, content)
+                VALUES ($1, $2, $3)""",
+                user_id, agent_type, message
             )
 
     async def log_action(self, user_id: int, action_type: str, details: str):
@@ -124,10 +104,18 @@ class Database:
             # Затем создаем таблицы
             await conn.execute("""
                 -- Основные таблицы
-                CREATE TABLE IF NOT EXISTS chat_history (
-                    user_id BIGINT PRIMARY KEY,
-                    history JSONB NOT NULL
+                CREATE TABLE IF NOT EXISTS messages (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    parent_message_id INTEGER REFERENCES messages(id)
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
+                CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+                CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at);
                 
                 -- Тарифы и фичи
                 CREATE TABLE IF NOT EXISTS tariff_features (
@@ -274,22 +262,48 @@ class Database:
             item['collection'], json.dumps(item['metadata']), item['content']
         )
 
-    def convert_to_model_messages(self, messages: list[Message]) -> list[ModelRequest | ModelResponse]:
-        result = []
-        for msg in messages:
-            if msg.role == "user":
-                result.append(ModelRequest(
-                    kind="request",
-                    parts=[UserPromptPart(content=msg.content)]
-                ))
-            else:
-                result.append(ModelResponse(
-                    kind="response",
-                    parts=[TextPart(content=msg.content)],
-                    model_name="gemini-2.0-flash-exp",
-                    timestamp=msg.timestamp
-                ))
-        return result 
+    def convert_to_model_messages(self, history: list[Message]) -> list[ModelMessage]:
+        """
+        Конвертирует список объектов Message в список объектов ModelMessage для pydantic-ai.
+        """
+        model_messages = []
+        print("\n=== convert_to_model_messages ===")
+        print(f"Исходная история ({len(history)} сообщений)")
+
+        for msg in history:
+            try:
+                if msg.role == "user":
+                    # Создаем ModelRequest для сообщений пользователя
+                    model_message = ModelRequest(
+                        parts=[UserPromptPart(
+                            content=msg.content,
+                            timestamp=msg.timestamp
+                        )],
+                        kind="request"
+                    )
+                elif msg.role == "assistant":
+                    # Создаем ModelResponse для ответов ассистента
+                    model_message = ModelResponse(
+                        parts=[TextPart(
+                            content=msg.content
+                        )],
+                        kind="response",
+                        model_name="assistant",
+                        timestamp=msg.timestamp
+                    )
+                else:
+                    print(f"Неизвестная роль сообщения: {msg.role}. Пропускаем.")
+                    continue
+
+                model_messages.append(model_message)
+                print(f"Успешно сконвертировано сообщение: {msg.role}")
+
+            except Exception as e:
+                print(f"Ошибка при конвертации сообщения: {str(e)}")
+                continue
+
+        print(f"Сконвертировано {len(model_messages)} сообщений")
+        return model_messages
 
     async def save_features(self, features: list[TariffFeature]):
         """Сохранение фич тарифов"""
@@ -541,3 +555,12 @@ class Database:
                     JOIN support_categories c ON q.category_id = c.id
                     ORDER BY c.name, q.priority DESC;
                 """) 
+
+    async def clear_history(self, user_id: int):
+        """Очистка истории сообщений для пользователя"""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM messages WHERE user_id = $1",
+                user_id
+            )
+            self.cache.clear() 

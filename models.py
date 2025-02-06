@@ -8,18 +8,22 @@ class Message(BaseModel):
     """
     Базовая модель для сообщений в диалоге между пользователем и ботом
     """
+    id: Optional[int] = None  # ID сообщения в базе данных
     role: Literal["user", "assistant"]  # Роль отправителя сообщения
     content: str  # Текст сообщения
     timestamp: datetime = Field(default_factory=datetime.now)  # Время отправки
+    parent_message_id: Optional[int] = None  # ID родительского сообщения
 
     model_config = ConfigDict(
         json_encoders={datetime: lambda v: v.isoformat()},  # Настройка сериализации datetime
         json_schema_extra = {
             "examples": [
                 {
+                    "id": 1,
                     "role": "user",
                     "content": "Привет!",
-                    "timestamp": "2024-02-20T12:00:00"
+                    "timestamp": "2024-02-20T12:00:00",
+                    "parent_message_id": None
                 }
             ]
         }

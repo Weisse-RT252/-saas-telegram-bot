@@ -1,5 +1,5 @@
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters
+from telegram.ext import Application, MessageHandler, filters, CommandHandler
 from database import Database
 from graph import service_graph, RouterNode
 import asyncpg
@@ -31,6 +31,8 @@ class TelegramBot:
     async def initialize(self):
         """Инициализация базы данных при запуске бота"""
         await self.db.init_db()
+        # Добавляем обработчик команды /clear
+        self.app.add_handler(CommandHandler("clear", self.clear_chat_history))
 
     async def handle_message(self, update: Update, _):
         """
@@ -60,8 +62,13 @@ class TelegramBot:
             # Сохраняем сообщение пользователя в историю
             await self.db.save_message(user_id, "user", message)
             
-            # Получаем последние 20 сообщений из истории диалога
-            history = (await self.db.get_history(user_id))[-20:]
+            # Получаем полную историю
+            history = (await self.db.get_history(user_id))
+            self.logger.info(f"Загружена полная история ({len(history)} сообщений): {history}")
+            
+            # Обрезаем до 20 последних
+            history = history[-20:]
+            self.logger.info(f"Загружено {len(history)} сообщений из истории (обрезано): {history}")
             self.logger.info(f"Загружено {len(history)} сообщений из истории")
             
             # Запускаем обработку через граф сервиса
@@ -79,8 +86,18 @@ class TelegramBot:
             self.logger.info(f"Ответ от графа: {response}")
             
             # Сохраняем ответ бота и отправляем его пользователю
-            await self.db.save_message(user_id, "assistant", response)
-            await update.message.reply_text(response)
+            if response:
+                # Разбиваем длинный ответ на части
+                parts = response.split("\n(продолжение следует...)")
+                
+                # Сохраняем полный ответ в историю
+                await self.db.save_message(user_id, "assistant", response)
+                
+                # Отправляем каждую часть последовательно
+                for part in parts:
+                    part = part.strip()
+                    if part:  # Проверяем, что часть не пустая
+                        await update.message.reply_text(part)
 
         except Exception as e:
             # В случае ошибки логируем её и уведомляем пользователя
@@ -96,4 +113,11 @@ class TelegramBot:
         await self.app.bot.send_message(
             chat_id=os.getenv("OPERATOR_CHAT_ID"),
             text=message
-        ) 
+        )
+
+    # Новый метод для обработки команды /clear
+    async def clear_chat_history(self, update: Update, _):
+        """Обработчик команды /clear для очистки истории чата"""
+        user_id = update.effective_user.id
+        await self.db.clear_history(user_id)
+        await update.message.reply_text("История чата очищена.") 

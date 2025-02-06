@@ -22,10 +22,18 @@ CREATE DATABASE $DB_NAME WITH OWNER $DB_USER;
 \connect $DB_NAME
 
 -- Создание таблиц
-CREATE TABLE chat_history (
-    user_id BIGINT PRIMARY KEY,
-    history JSONB NOT NULL
+CREATE TABLE messages (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    parent_message_id INTEGER REFERENCES messages(id)
 );
+
+CREATE INDEX idx_messages_user_id ON messages(user_id);
+CREATE INDEX idx_messages_created_at ON messages(created_at);
+CREATE INDEX idx_messages_user_created ON messages(user_id, created_at);
 
 -- Тарифы и фичи
 CREATE TABLE tariff_features (
@@ -136,7 +144,7 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO $DB_USER;
 GRANT USAGE ON SCHEMA public TO $DB_USER;
 
 -- Изменение владельца таблиц
-ALTER TABLE chat_history OWNER TO $DB_USER;
+ALTER TABLE messages OWNER TO $DB_USER;
 ALTER TABLE tariff_features OWNER TO $DB_USER;
 ALTER TABLE sales_tariffs OWNER TO $DB_USER;
 ALTER TABLE tariff_feature_relations OWNER TO $DB_USER;

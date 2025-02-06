@@ -35,4 +35,14 @@ CREATE INDEX IF NOT EXISTS idx_user_actions_user_date ON user_actions(user_id, c
 
 -- Индексы для связей между таблицами
 CREATE INDEX IF NOT EXISTS idx_tariff_features_tariff_id ON tariff_features(tariff_id);
-CREATE INDEX IF NOT EXISTS idx_support_questions_category_id ON support_general_questions(category_id); 
+CREATE INDEX IF NOT EXISTS idx_support_questions_category_id ON support_general_questions(category_id);
+
+-- Индексы для таблицы messages
+CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id);
+
+-- Полнотекстовый поиск для сообщений
+CREATE INDEX IF NOT EXISTS idx_messages_content_fts ON messages 
+USING gin(to_tsvector('russian', content)); 
