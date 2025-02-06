@@ -9,7 +9,7 @@ class Message(BaseModel):
     Базовая модель для сообщений в диалоге между пользователем и ботом
     """
     id: Optional[int] = None  # ID сообщения в базе данных
-    role: Literal["user", "assistant"]  # Роль отправителя сообщения
+    role: str  # Роль отправителя сообщения
     content: str  # Текст сообщения
     timestamp: datetime = Field(default_factory=datetime.now)  # Время отправки
     parent_message_id: Optional[int] = None  # ID родительского сообщения

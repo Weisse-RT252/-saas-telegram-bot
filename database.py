@@ -38,34 +38,51 @@ class Database:
         self.cache[cache_key] = results
         return results
 
-    async def get_history(self, user_id: int) -> list[Message]:
+    async def get_history(self, user_id: int, limit: int = 5) -> list[Message]:
+        """
+        Получает историю сообщений пользователя
+        
+        Args:
+            user_id: ID пользователя
+            limit: Максимальное количество сообщений
+            
+        Returns:
+            list[Message]: Список сообщений в хронологическом порядке
+        """
         async with self.pool.acquire() as conn:
             messages = await conn.fetch(
-                """SELECT id, role, content, created_at 
+                """
+                SELECT id, role, content, created_at, parent_message_id
                 FROM messages 
                 WHERE user_id = $1 
-                ORDER BY created_at ASC""",
-                user_id
+                ORDER BY created_at DESC 
+                LIMIT $2
+                """,
+                user_id, limit
             )
-            print(f"\n=== Получение истории ===")
-            print(f"Получено {len(messages)} сообщений")
+            
             return [Message(
+                id=msg['id'],
                 role=msg['role'],
                 content=msg['content'],
-                timestamp=msg['created_at']
-            ) for msg in messages]
+                timestamp=msg['created_at'],
+                parent_message_id=msg['parent_message_id']
+            ) for msg in reversed(messages)]
 
-    async def save_message(self, user_id: int, agent_type: str, message: str):
-        msg_obj = Message(role=agent_type, content=message)
+    async def save_message(self, user_id: int, role: str, content: str):
+        """Сохранение сообщения с дополнительными проверками"""
+        # Проверка на наличие скрытых инструкций
+        if any(tag in content for tag in ["{Z}", "<|vq_", "LIBERATED_ASSISTANT"]):
+            self.logger.warning(f"Блокировка сообщения с тегами: {content}")
+            return
         
-        print(f"\n=== Сохранение сообщения ===")
-        print(f"Message object: {msg_obj}")
+        # Ограничение длины сохраняемых сообщений
+        cleaned_content = content[:2000]  # Обрезаем слишком длинные сообщения
         
         async with self.pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO messages (user_id, role, content)
-                VALUES ($1, $2, $3)""",
-                user_id, agent_type, message
+                "INSERT INTO messages (user_id, role, content) VALUES ($1, $2, $3)",
+                user_id, role, cleaned_content
             )
 
     async def log_action(self, user_id: int, action_type: str, details: str):
@@ -557,10 +574,22 @@ class Database:
                 """) 
 
     async def clear_history(self, user_id: int):
-        """Очистка истории сообщений для пользователя"""
+        """Очистка всей истории пользователя"""
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM messages WHERE user_id = $1",
-                user_id
-            )
-            self.cache.clear() 
+            async with conn.transaction():
+                # Очищаем сообщения
+                await conn.execute(
+                    "DELETE FROM messages WHERE user_id = $1",
+                    user_id
+                )
+                
+                # Очищаем действия пользователя
+                await conn.execute(
+                    "DELETE FROM user_actions WHERE user_id = $1",
+                    user_id
+                )
+                
+                # Очищаем кэш
+                self.cache.clear()
+                
+                print(f"История пользователя {user_id} полностью очищена") 
